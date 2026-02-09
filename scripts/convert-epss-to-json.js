@@ -4,6 +4,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 const Papa = require('papaparse');
 
 const DEFAULT_INPUT = 'src/epss_scores-current.csv';
@@ -137,18 +138,12 @@ async function updateVulnrichment(targetDir) {
 
 async function bootstrapDefaultVulnrichment(targetDir) {
   const exists = await pathExists(targetDir);
-  if (!exists) {
-    await cloneVulnrichment(targetDir);
+  if (exists) {
+    console.log(`[vulnrichment] Dataset already exists at ${targetDir}. Skipping update.`);
     return;
   }
 
-  try {
-    await updateVulnrichment(targetDir);
-  } catch (error) {
-    console.warn(`[vulnrichment] Update failed for ${targetDir}: ${error.message}. Re-cloning...`);
-    await fs.rm(targetDir, { recursive: true, force: true });
-    await cloneVulnrichment(targetDir);
-  }
+  await cloneVulnrichment(targetDir);
 }
 
 async function prepareEnrichmentRoot(requestedPath) {
@@ -420,14 +415,28 @@ async function convertCsvToJson({ enrichmentRoot } = {}) {
     throw new Error(`Failed to parse CSV (row ${row}): ${message}`);
   }
 
+  // Sort data by year descending (newest to oldest)
+  data.sort((a, b) => {
+    const yearA = parseInt(a.cve.split('-')[1]);
+    const yearB = parseInt(b.cve.split('-')[1]);
+    return yearB - yearA;
+  });
+
   const records = [];
   let enrichedCount = 0;
   let nvdCount = 0;
   let processed = 0;
+  let currentYear = null;
 
   for (const row of data) {
     if (!row.cve) {
       continue;
+    }
+
+    const year = parseInt(row.cve.split('-')[1]);
+    if (year !== currentYear) {
+      console.log(`Processing CVEs for year ${year}...`);
+      currentYear = year;
     }
 
     const record = {
@@ -449,11 +458,13 @@ async function convertCsvToJson({ enrichmentRoot } = {}) {
       } catch (error) {
         console.warn(`[vulnrichment] Failed to enrich ${row.cve}: ${error.message}`);
       }
+      // Add a small delay to slow down processing for better enrichment
+      await new Promise(r => setTimeout(r, 100));
     }
 
     if (!record.vulnrichment && ENABLE_NVD && nvdCount < NVD_LIMIT) {
       console.log(`[NVD] Fetching enrichment for ${row.cve}...`);
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 2000)); // Increased delay to 2 seconds
       const enrichment = await fetchNVD(row.cve);
       if (enrichment) {
         record.vulnrichment = enrichment;

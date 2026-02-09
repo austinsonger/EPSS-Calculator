@@ -7,7 +7,7 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const Papa = require('papaparse');
 
-const DEFAULT_INPUT = 'src/epss_scores-current.csv';
+const DEFAULT_INPUT = 'src/epss_scores-current.csv'; // Change this to the path of your full EPSS CSV if you have one
 const DEFAULT_OUTPUT = 'src/epss_scores-current.json';
 const CVE_ID_PATTERN = /^CVE-(\d{4})-(\d{4,})$/i;
 const CVSS_KEYS = ['cvssV4_0', 'cvssV4', 'cvssV3_1', 'cvssV3_0', 'cvssV2_0'];
@@ -17,20 +17,23 @@ const VULNREICHMENT_BRANCH = process.env.VULNREICHMENT_BRANCH || 'develop';
 
 // CONFIGURATION: Edit these constants to enable features
 const VERBOSE = true; // Set to true for detailed enrichment logs for every CVE
-const ENABLE_NVD = true; // Set to true to fetch missing enrichment from NVD API
-const NVD_LIMIT = 100; // Max number of NVD fetches when ENABLE_NVD is true
+const ENABLE_NVD = false; // Set to true to fetch missing enrichment from NVD API
+const NVD_LIMIT = 10000; // Max number of NVD fetches when ENABLE_NVD is true
+const ENABLE_YEAR_FILTER = false; // Set to true to filter CVEs by specific years
+const YEAR_FILTER = [2003, 2004, 2005, 2006, 2007]; // Array of years to include when ENABLE_YEAR_FILTER is true
+const ENABLE_ENRICHMENT = true; // Set to false for quick CSV to JSON conversion without enrichment
 
 function printUsage() {
   console.log(`
 Usage: node scripts/convert-epss-to-json.js [input] [output] [vulnrichment-path]
 
 Arguments:
-  input                 Path to EPSS CSV file (default: src/epss_scores-current.csv)
+  input                 Path to EPSS CSV file (default: src/epss_scores-current.csv - change to full dataset if available)
   output                Path to output JSON file (default: src/epss_scores-current.json)
   vulnrichment-path     Path to vulnrichment dataset (default: auto-downloaded)
 
 Configuration:
-  Edit the constants VERBOSE, ENABLE_NVD, NVD_LIMIT in the script to enable features.
+  Edit the constants VERBOSE, ENABLE_NVD, NVD_LIMIT, ENABLE_YEAR_FILTER, YEAR_FILTER, ENABLE_ENRICHMENT in the script to enable features.
 
 Examples:
   npm run convert-epss-json
@@ -415,12 +418,28 @@ async function convertCsvToJson({ enrichmentRoot } = {}) {
     throw new Error(`Failed to parse CSV (row ${row}): ${message}`);
   }
 
+  console.log(`Parsed ${data.length} rows from CSV`);
+
   // Sort data by year descending (newest to oldest)
   data.sort((a, b) => {
     const yearA = parseInt(a.cve.split('-')[1]);
     const yearB = parseInt(b.cve.split('-')[1]);
     return yearB - yearA;
   });
+
+  // Load existing records to preserve enrichments
+  let existingRecords = {};
+  try {
+    const existingData = await fs.readFile(outputPath, 'utf8');
+    const existingJson = JSON.parse(existingData);
+    existingRecords = existingJson.records.reduce((map, rec) => {
+      map[rec.cve] = rec;
+      return map;
+    }, {});
+    console.log(`Loaded ${Object.keys(existingRecords).length} existing records from ${path.relative(process.cwd(), outputPath)}`);
+  } catch (error) {
+    console.log(`No existing JSON file found at ${path.relative(process.cwd(), outputPath)}, starting fresh.`);
+  }
 
   const records = [];
   let enrichedCount = 0;
@@ -430,10 +449,18 @@ async function convertCsvToJson({ enrichmentRoot } = {}) {
 
   for (const row of data) {
     if (!row.cve) {
+      console.log(`Skipped row without cve: ${JSON.stringify(row)}`);
       continue;
     }
 
     const year = parseInt(row.cve.split('-')[1]);
+    if (isNaN(year)) {
+      console.log(`Skipped invalid CVE format: ${row.cve}`);
+      continue;
+    }
+    if (ENABLE_YEAR_FILTER && !YEAR_FILTER.includes(year)) {
+      continue;
+    }
     if (year !== currentYear) {
       console.log(`Processing CVEs for year ${year}...`);
       currentYear = year;
@@ -445,9 +472,28 @@ async function convertCsvToJson({ enrichmentRoot } = {}) {
       percentile: toNumber(row.percentile),
     };
 
-    if (loader) {
-      try {
-        const enrichment = await loader(row.cve);
+    const existing = existingRecords[row.cve];
+    if (existing && existing.vulnrichment && existing.vulnrichment.vendorProducts && existing.vulnrichment.vendorProducts.length > 0) {
+      record.vulnrichment = existing.vulnrichment;
+      // Already enriched with product info, skip enrichment attempts
+    } else {
+      // Try to enrich or re-enrich if missing product info
+      if (ENABLE_ENRICHMENT && loader) {
+        let enrichment = null;
+        try {
+          enrichment = await loader(row.cve);
+        } catch (error) {
+          console.warn(`[vulnrichment] Failed to enrich ${row.cve}: ${error.message}`);
+        }
+        // Add a small delay and retry if failed
+        if (!enrichment) {
+          await new Promise(r => setTimeout(r, 10));
+          try {
+            enrichment = await loader(row.cve);
+          } catch (error) {
+            console.warn(`[vulnrichment] Retry failed for ${row.cve}: ${error.message}`);
+          }
+        }
         if (enrichment) {
           record.vulnrichment = enrichment;
           enrichedCount += 1;
@@ -455,16 +501,13 @@ async function convertCsvToJson({ enrichmentRoot } = {}) {
             console.log(`[vulnrichment] Enriched ${row.cve}`);
           }
         }
-      } catch (error) {
-        console.warn(`[vulnrichment] Failed to enrich ${row.cve}: ${error.message}`);
+        // Removed delay to speed up processing
       }
-      // Add a small delay to slow down processing for better enrichment
-      await new Promise(r => setTimeout(r, 30));
     }
 
     if (!record.vulnrichment && ENABLE_NVD && nvdCount < NVD_LIMIT) {
       console.log(`[NVD] Fetching enrichment for ${row.cve}...`);
-      await new Promise(r => setTimeout(r, 2000)); // Increased delay to 2 seconds
+      await new Promise(r => setTimeout(r, 10)); // Increased delay to 2 seconds
       const enrichment = await fetchNVD(row.cve);
       if (enrichment) {
         record.vulnrichment = enrichment;
@@ -501,6 +544,8 @@ async function convertCsvToJson({ enrichmentRoot } = {}) {
       enrichmentMessage = ` (enriched ${nvdCount} from NVD)`;
     }
     console.log(baseMessage + enrichmentMessage);
+    const years = [...new Set(records.map(r => parseInt(r.cve.split('-')[1])))].sort();
+    console.log(`Years included: ${years.join(', ')}`);
   }
 
   async function main() {

@@ -1,0 +1,36 @@
+name: Update EPSS data nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download latest EPSS scores
+        run: |
+          curl -L -o epss_scores-current.csv.gz https://epss.cyentia.com/epss_scores-current.csv.gz
+          gunzip -c epss_scores-current.csv.gz > src/epss_scores-current.csv
+          rm epss_scores-current.csv.gz
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Commit and push changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git add src/epss_scores-current.csv
+          git commit -m "chore: update EPSS data"
+          git push

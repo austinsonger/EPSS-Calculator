@@ -14,10 +14,10 @@ const DEFAULT_VULNREICHMENT_ROOT = path.resolve(process.cwd(), '.cache', 'vulnri
 const VULNREICHMENT_REPO = 'https://github.com/cisagov/vulnrichment.git';
 const VULNREICHMENT_BRANCH = process.env.VULNREICHMENT_BRANCH || 'develop';
 
-// Edit these constants to enable features
-const VERBOSE = true; // Set to true for detailed enrichment logs
-const ENABLE_NVD = false; // Set to true to fetch missing enrichment from NVD
-const NVD_LIMIT = 100; // Max NVD fetches when enabled
+// CONFIGURATION: Edit these constants to enable features
+const VERBOSE = true; // Set to true for detailed enrichment logs for every CVE
+const ENABLE_NVD = false; // Set to true to fetch missing enrichment from NVD API
+const NVD_LIMIT = 100; // Max number of NVD fetches when ENABLE_NVD is true
 
 function printUsage() {
   console.log(`
@@ -43,15 +43,13 @@ if (args.includes('--help')) {
   process.exit(0);
 }
 
+let inputPath = DEFAULT_INPUT;
+let outputPath = DEFAULT_OUTPUT;
+let vulnrichmentPath = null;
+
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
-  if (arg === '--verbose') {
-    verbose = true;
-  } else if (arg === '--enable-nvd') {
-    enableNvd = true;
-  } else if (arg.startsWith('--nvd-limit=')) {
-    nvdLimit = parseInt(arg.split('=')[1]) || 100;
-  } else if (!inputPath || inputPath === DEFAULT_INPUT) {
+  if (!inputPath || inputPath === DEFAULT_INPUT) {
     inputPath = ensureAbsolute(arg, DEFAULT_INPUT);
   } else if (!outputPath || outputPath === DEFAULT_OUTPUT) {
     outputPath = ensureAbsolute(arg, DEFAULT_OUTPUT);

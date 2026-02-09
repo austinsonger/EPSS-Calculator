@@ -17,7 +17,7 @@ const VULNREICHMENT_BRANCH = process.env.VULNREICHMENT_BRANCH || 'develop';
 
 // CONFIGURATION: Edit these constants to enable features
 const VERBOSE = true; // Set to true for detailed enrichment logs for every CVE
-const ENABLE_NVD = false; // Set to true to fetch missing enrichment from NVD API
+const ENABLE_NVD = true; // Set to true to fetch missing enrichment from NVD API
 const NVD_LIMIT = 100; // Max number of NVD fetches when ENABLE_NVD is true
 
 function printUsage() {
@@ -459,7 +459,7 @@ async function convertCsvToJson({ enrichmentRoot } = {}) {
         console.warn(`[vulnrichment] Failed to enrich ${row.cve}: ${error.message}`);
       }
       // Add a small delay to slow down processing for better enrichment
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 30));
     }
 
     if (!record.vulnrichment && ENABLE_NVD && nvdCount < NVD_LIMIT) {
